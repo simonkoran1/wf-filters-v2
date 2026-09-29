@@ -1,4 +1,3 @@
-<script>
 (function () {
   const FILTER_FIELD  = 'wf-field';
   const FILTER_VALUE  = 'wf-value';
@@ -867,4 +866,3 @@
     ? document.addEventListener('DOMContentLoaded', init)
     : init();
 })();
-</script>
