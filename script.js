@@ -8,9 +8,22 @@
   const STATUS_OPEN_VALUE = 'open';
   const DIM_OPACITY       = '0.25';
 
+  const SORT_ATTR       = 'wf-sort';        // on controls: field to sort by
+  const SORT_ORDER_ATTR = 'wf-sort-order';  // on controls: asc | desc (optional)
+  const SORT_FIELD_ATTR = 'wf-sort-field';  // on item elements: value source
+  const SORT_TYPE_ATTR  = 'wf-sort-type';   // on item elements: number | date | text (optional)
+
   const sliderState     = {};
   const loadMoreState   = new WeakMap();
   const paginationState = new WeakMap();
+  const sortState       = { field: '', order: 'asc' };
+
+  let collator;
+  try {
+    collator = new Intl.Collator(document.documentElement.lang || 'cs', { numeric: true, sensitivity: 'base' });
+  } catch (e) {
+    collator = new Intl.Collator('cs', { numeric: true, sensitivity: 'base' });
+  }
 
   // ─── Formatters ───────────────────────────────────────────────────────────────
 
@@ -496,7 +509,7 @@
     if (!ui.host || !ui.template) return;
     ui.host.replaceChildren();
 
-    const activeClass = ui.template.getAttribute(FILTER_ACTIVE) || 'is-active';
+    const activeClass = ui.template.getAttribute(FILTER_ACTIVE) || 'w--current';
 
     getPageSequence(st.page, totalPages, st.siblings, st.boundary).forEach(p => {
       if (p === '…') {
@@ -628,6 +641,172 @@
     st.ui = { wrapper, prev, next, template, dotsTemplate, pageCount, host };
   }
 
+  // ─── Sort ─────────────────────────────────────────────────────────────────────
+
+  function isNumericText(s) {
+    return /^-?[\d\s ]+([.,]\d+)?$/.test(s);
+  }
+
+  // Supports ISO (2025-03-12) and Czech (12. 3. 2025) dates
+  function parseDate(s) {
+    const cz = s.match(/^(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})/);
+    if (cz) return new Date(+cz[3], +cz[2] - 1, +cz[1]).getTime();
+    const t = Date.parse(s);
+    return isNaN(t) ? null : t;
+  }
+
+  function getSortValue(item, field) {
+    const el = item.querySelector(`[${SORT_FIELD_ATTR}="${field}"]`);
+    if (!el) return null;
+
+    const hasRaw = el.dataset.rawValue !== undefined;
+    const raw    = (hasRaw ? el.dataset.rawValue : el.textContent).trim();
+    if (raw === '') return null;
+
+    let type = el.getAttribute(SORT_TYPE_ATTR);
+    if (!type) type = (hasRaw || isNumericText(raw)) ? 'number' : 'text';
+
+    if (type === 'number') {
+      const n = parseFloat(raw.replace(/[\s ]/g, '').replace(',', '.'));
+      return isNaN(n) ? null : n;
+    }
+    if (type === 'date') return parseDate(raw);
+    return raw;
+  }
+
+  function getListItems(list) {
+    return Array.from(list.children).filter(el => el.getAttribute('role') === 'listitem');
+  }
+
+  function indexItems() {
+    document.querySelectorAll(`[${LIST_ELEMENT}="list"]`).forEach(list => {
+      getListItems(list).forEach((item, i) => { item.dataset.wfIndex = i; });
+    });
+  }
+
+  function sortLists() {
+    const { field, order } = sortState;
+    const dir = order === 'desc' ? -1 : 1;
+
+    document.querySelectorAll(`[${LIST_ELEMENT}="list"]`).forEach(list => {
+      const entries = getListItems(list).map(item => ({
+        item,
+        idx: parseInt(item.dataset.wfIndex, 10) || 0,
+        val: field ? getSortValue(item, field) : null,
+      }));
+
+      entries.sort((a, b) => {
+        if (!field) return a.idx - b.idx;                 // original CMS order
+        if (a.val === null && b.val === null) return a.idx - b.idx;
+        if (a.val === null) return 1;                     // empty values always last
+        if (b.val === null) return -1;
+        const cmp = (typeof a.val === 'number' && typeof b.val === 'number')
+          ? a.val - b.val
+          : collator.compare(String(a.val), String(b.val));
+        return cmp === 0 ? a.idx - b.idx : cmp * dir;
+      });
+
+      const fragment = document.createDocumentFragment();
+      entries.forEach(({ item }) => fragment.appendChild(item));
+      list.appendChild(fragment);
+    });
+  }
+
+  function updateSortUI() {
+    const { field, order } = sortState;
+
+    document.querySelectorAll(`[${SORT_ATTR}]`).forEach(el => {
+      const elField     = el.getAttribute(SORT_ATTR);
+      const elOrder     = el.getAttribute(SORT_ORDER_ATTR);
+      const activeClass = el.getAttribute(FILTER_ACTIVE) || 'is-active';
+      const isMatch     = elField === field && (!field || !elOrder || elOrder === order);
+
+      if (el.tagName === 'INPUT') {
+        el.checked = isMatch;
+        const label = el.closest('label');
+        label?.classList.toggle(activeClass, isMatch);
+        label?.querySelector('.w-radio-input')?.classList.toggle('w--redirected-checked', isMatch);
+        if (isMatch) updateDropdownToggleText(el);
+        return;
+      }
+
+      const isActive = isMatch && !!field;
+      el.classList.toggle(activeClass, isActive);
+      el.classList.toggle('is-asc',  isActive && order === 'asc');
+      el.classList.toggle('is-desc', isActive && order === 'desc');
+    });
+
+    document.querySelectorAll(`select[${LIST_ELEMENT}="sort"]`).forEach(sel => {
+      sel.value = field ? `${field}-${order}` : '';
+    });
+  }
+
+  function parseSortValue(value) {
+    if (!value) return { field: '', order: 'asc' };
+    const m = value.match(/^(.*)-(asc|desc)$/);
+    return m ? { field: m[1], order: m[2] } : { field: value, order: 'asc' };
+  }
+
+  function setSort(field, order) {
+    sortState.field = field || '';
+    sortState.order = order === 'desc' ? 'desc' : 'asc';
+    sortLists();
+    updateSortUI();
+    applyFilters(); // re-renders + resets to page 1
+  }
+
+  function initSort() {
+    document.querySelectorAll(`[${SORT_ATTR}]`).forEach(el => {
+      // Radio / checkbox inside a dropdown
+      if (el.tagName === 'INPUT') {
+        el.addEventListener('change', () => {
+          if (el.checked) setSort(el.getAttribute(SORT_ATTR), el.getAttribute(SORT_ORDER_ATTR) || 'asc');
+        });
+        return;
+      }
+
+      // Clickable element (e.g. table header) — toggles asc/desc unless wf-sort-order is fixed
+      el.addEventListener('click', e => {
+        e.preventDefault();
+        const field = el.getAttribute(SORT_ATTR);
+        const fixed = el.getAttribute(SORT_ORDER_ATTR);
+        let order   = fixed || 'asc';
+        if (!fixed && sortState.field === field) {
+          order = sortState.order === 'asc' ? 'desc' : 'asc';
+        }
+        setSort(field, order);
+      });
+
+      if (!['A', 'BUTTON'].includes(el.tagName)) {
+        if (!el.hasAttribute('tabindex')) el.tabIndex = 0;
+        el.addEventListener('keydown', e => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); }
+        });
+      }
+    });
+
+    // Native <select>, option values like "loan-amount-desc"
+    document.querySelectorAll(`select[${LIST_ELEMENT}="sort"]`).forEach(sel => {
+      sel.addEventListener('change', () => {
+        const { field, order } = parseSortValue(sel.value);
+        setSort(field, order);
+      });
+    });
+
+    // Initial sort from a pre-checked radio or pre-selected option
+    const preRadio  = document.querySelector(`input[${SORT_ATTR}]:checked`);
+    const preSelect = document.querySelector(`select[${LIST_ELEMENT}="sort"]`);
+    if (preRadio) {
+      sortState.field = preRadio.getAttribute(SORT_ATTR) || '';
+      sortState.order = preRadio.getAttribute(SORT_ORDER_ATTR) === 'desc' ? 'desc' : 'asc';
+    } else if (preSelect?.value) {
+      Object.assign(sortState, parseSortValue(preSelect.value));
+    }
+
+    if (sortState.field) sortLists();
+    updateSortUI();
+  }
+
   // ─── Render a single list ─────────────────────────────────────────────────────
 
   function renderList(list, activeFilters, { resetPage = true } = {}) {
@@ -676,6 +855,7 @@
   function clearFilters() {
     document.querySelectorAll(`input[type="radio"], input[type="checkbox"]`).forEach(input => {
       if (input.type === 'range') return;
+      if (input.hasAttribute(SORT_ATTR)) return; // sorting is kept on clear
       const isRangeBucket = input.hasAttribute('wf-value-min') || input.hasAttribute('wf-value-max');
       const activeClass   = input.getAttribute(FILTER_ACTIVE) || 'is-active';
 
@@ -729,6 +909,8 @@
     await Promise.all(managedLists.map(async list => {
       loadInfo.set(list, await fetchAndInjectAllPages(list));
     }));
+
+    indexItems(); // remember original CMS order for "default" sort
 
     // Check the status checkbox by default
     const statusCb = getStatusCheckbox();
@@ -843,6 +1025,9 @@
     document.querySelectorAll(`[${LIST_ELEMENT}="clear"]`).forEach(btn => {
       btn.addEventListener('click', e => { e.preventDefault(); clearFilters(); });
     });
+
+    // ── Sort ──
+    initSort();
 
     // ── Load more / pagination ──
     loadInfo.forEach((info, list) => {
