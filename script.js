@@ -27,11 +27,29 @@
 
   // ─── Formatters ───────────────────────────────────────────────────────────────
 
+  const monthRules = new Intl.PluralRules('cs');
+  const monthForms = { one: 'měsíc', few: 'měsíce', many: 'měsíce', other: 'měsíců' };
+
+  function formatMonthLabels() {
+    document.querySelectorAll('[data-months]').forEach(container => {
+      const count = container.querySelector('[data-month-count]');
+      const unit = container.querySelector('[data-month-unit]');
+      if (!count || !unit) return;
+
+      const raw = count.textContent.trim().replace(',', '.');
+      const value = Number(raw);
+      unit.textContent = raw && Number.isFinite(value)
+        ? monthForms[monthRules.select(value)]
+        : '';
+    });
+  }
+
   function runFormatters() {
     if (typeof window.formatI18n === 'function') window.formatI18n();
     if (typeof window.initInvestmentProgress === 'function') window.initInvestmentProgress();
     if (typeof window.initRatingFormat === 'function') window.initRatingFormat();
     if (typeof window.initYieldPremium === 'function') window.initYieldPremium();
+    formatMonthLabels();
   }
 
   // ─── Checkbox helper ──────────────────────────────────────────────────────────
